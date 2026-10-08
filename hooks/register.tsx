@@ -150,7 +150,9 @@ const tick = async ($: EngineInterface) => {
     const { canDraw } = await setUp($)
     if (!canDraw) {
       const ns = await read($, inBox)
-      await writeShelf($, (await read($, shots)).filter(s => ns.includes(s.n)), lastShown && ns.length > 0, lastColumns)
+      // In the prompt's order, as the band writes it: shots is in the order copies finished.
+      const all = await read($, shots)
+      await writeShelf($, ns.flatMap(n => all.filter(s => s.n === n)), lastShown && ns.length > 0, lastColumns)
       const { edits } = await setUp($)
       const told = Number(/"rows":(\d+)/.exec(await $.fs.read(`${edits}/layout.json`).catch(() => ''))?.[1] ?? PANEL_ROWS)
       if (told !== (await read($, roomRows))) await update($, roomRows, () => told)

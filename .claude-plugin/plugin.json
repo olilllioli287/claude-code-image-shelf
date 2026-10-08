@@ -1,6 +1,6 @@
 {
   "name": "image-shelf",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pasted images shown as a scrollable shelf above the prompt, even in iTerm2 + tmux; click one to mark it up",
   "author": { "name": "olilllioli287", "url": "https://github.com/olilllioli287" },
   "homepage": "https://github.com/olilllioli287/claude-code-image-shelf",

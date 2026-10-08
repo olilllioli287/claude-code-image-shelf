@@ -31,8 +31,9 @@ struct Shelf: Decodable {
 }
 
 // Where the band's picture rows end (their bottom edge, y down), how wide they are, a
-// row's height, and how many rows there are above that edge within the pane.
-struct Place { let x: Double; let bottom: Double; let width: Double; let cellW: Double; let cellH: Double; let roomRows: Int; let collapseTop: Double? }
+// row's height, and how many rows there are above that edge within the pane; and the
+// session's iTerm2 profile, whose background the pane shows.
+struct Place { let x: Double; let bottom: Double; let width: Double; let cellW: Double; let cellH: Double; let roomRows: Int; let collapseTop: Double?; let profile: String; let hasText: Bool }
 
 final class Thumb: NSImageView {
   var file = ""
@@ -63,9 +64,9 @@ if CommandLine.arguments.count == 4 && CommandLine.arguments[1] == "--probe" {
   let pane = CommandLine.arguments[2]
   let probeTmux = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "tmux"
   let width = Int(sh([probeTmux, "display", "-p", "-t", pane, "#{pane_width}"])) ?? 80
-  let lines = sh([probeTmux, "capture-pane", "-p", "-t", pane]).components(separatedBy: "\n")
+  let lines = sh([probeTmux, "capture-pane", "-p", "-t", pane], trim: false).components(separatedBy: "\n")
   if let m = layout(lines, width, Int(CommandLine.arguments[3]) ?? 4) {
-    print("rule=\(m.rule) collapse=\(m.collapse.map(String.init) ?? "-") tile=\(m.tileRows) band=\(m.band)")
+    print("rule=\(m.rule) collapse=\(m.collapse.map(String.init) ?? "-") tile=\(m.tileRows) text=\(m.hasText) band=\(m.band)")
   } else { print("none") }
   exit(0)
 }
@@ -99,7 +100,9 @@ var shelf: Shelf?
 var images: [String: NSImage] = [:]
 var drawnKey = ""
 
-func sh(_ argv: [String]) -> String {
+// trim: false keeps the text as printed: a pane's capture starts with its blank top rows,
+// and trimming them would shift every row number by as many.
+func sh(_ argv: [String], trim: Bool = true) -> String {
   let p = Process()
   p.executableURL = URL(fileURLWithPath: argv[0])
   p.arguments = Array(argv.dropFirst())
@@ -109,7 +112,8 @@ func sh(_ argv: [String]) -> String {
   do { try p.run() } catch { return "" }
   let data = out.fileHandleForReading.readDataToEndOfFile()
   p.waitUntilExit()
-  return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+  let text = String(decoding: data, as: UTF8.self)
+  return trim ? text.trimmingCharacters(in: .whitespacesAndNewlines) : text
 }
 
 let tmuxPath = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "tmux"
@@ -124,19 +128,20 @@ let frontQuery = """
   tell application "iTerm2"
     set w to current window
     set b to bounds of w
-    return (tty of current session of w) & "|" & (item 1 of b) & "," & (item 2 of b) & "," & (item 3 of b) & "," & (item 4 of b) & "," & (count of tabs of w)
+    return (tty of current session of w) & "|" & (item 1 of b) & "," & (item 2 of b) & "," & (item 3 of b) & "," & (item 4 of b) & "," & (count of tabs of w) & "|" & (profile name of current session of w)
   end tell
   """
 
 // The front iTerm2 session's tty, its window's bounds (x1, y1, x2, y2; y down) and its
-// number of tabs. Run as
+// number of tabs, and the session's profile (its colours). Run as
 // osascript, off the main thread (NSAppleScript belongs to the main thread).
-func frontSession() -> (tty: String, bounds: [Double])? {
+typealias Session = (tty: String, bounds: [Double], profile: String)
+func frontSession() -> Session? {
   let text = sh(["/usr/bin/osascript", "-e", frontQuery])
-  let parts = text.split(separator: "|", maxSplits: 1).map(String.init)
-  guard parts.count == 2 else { return nil }
+  let parts = text.split(separator: "|", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+  guard parts.count >= 2 else { return nil }
   let numbers = parts[1].split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
-  return numbers.count == 5 ? (parts[0], numbers) : nil
+  return numbers.count == 5 ? (parts[0], numbers, parts.count > 2 ? parts[2] : "") : nil
 }
 
 // Test mode (a file "force.on" beside the shelf): the window of the tmux client attached
@@ -146,25 +151,26 @@ let forcePath = (shelfPath as NSString).deletingLastPathComponent + "/force.on"
 var isForced = false
 var forcedWindow: Int = 0
 
-func sessionByTty(_ tty: String) -> (tty: String, bounds: [Double])? {
+func sessionByTty(_ tty: String) -> Session? {
   let text = sh(["/usr/bin/osascript", "-e", """
     tell application "iTerm2"
       repeat with w in windows
         if (tty of current session of w) is "\(tty)" then
           set b to bounds of w
-          return (item 1 of b) & "," & (item 2 of b) & "," & (item 3 of b) & "," & (item 4 of b) & "," & (count of tabs of w)
+          return (item 1 of b) & "," & (item 2 of b) & "," & (item 3 of b) & "," & (item 4 of b) & "," & (count of tabs of w) & "|" & (profile name of current session of w)
         end if
       end repeat
     end tell
     """])
-  let numbers = text.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+  let parts = text.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+  let numbers = (parts.first ?? "").split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
   guard numbers.count == 5 else { return nil }
   let all = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
   forcedWindow = all.first { w in
     guard (w[kCGWindowOwnerName as String] as? String) == "iTerm2", let r = w[kCGWindowBounds as String] as? [String: Double] else { return false }
     return abs((r["X"] ?? -1) - numbers[0]) < 2 && abs((r["Y"] ?? -1) - numbers[1]) < 2
   }?[kCGWindowNumber as String] as? Int ?? 0
-  return (tty, numbers)
+  return (tty, numbers, parts.count > 1 ? parts[1] : "")
 }
 
 // The app the person is in. Not frontmostApplication: a menu-bar app that activates itself
@@ -177,28 +183,35 @@ func frontApp() -> NSRunningApplication? {
 // Row offsets measured per window shape (see place()).
 var chromes: [String: Double] = [:]
 
-// The rows of light horizontal lines in a strip of the screen 40 points wide at x, from
-// top for height points, in points from top; then the offset that puts both of the
-// prompt's rules (rows a and b, drawn at mid-row) on lines. Uses screencapture, which the
-// terminal's own screen-recording permission covers.
+// The rows of horizontal lines in a strip of the screen 40 points wide at x, from top for
+// height points, in points from top; then the offset that puts both of the prompt's rules
+// (rows a and b, drawn at mid-row) on lines. A line stands apart from the terminal's
+// background (the strip's commonest brightness) all across the strip: light on a dark
+// background, grey on a light one. Uses screencapture, which the terminal's own
+// screen-recording permission covers.
 func measureChrome(x: Double, top: Double, height: Double, rows: (Double, Double), cellH: Double) -> Double? {
   let file = NSTemporaryDirectory() + "image-shelf-strip-\(getpid()).png"
   _ = sh(["/usr/sbin/screencapture", "-x", "-R", "\(Int(x)),\(Int(top)),40,\(Int(height))", file])
   defer { try? FileManager.default.removeItem(atPath: file) }
   guard let data = FileManager.default.contents(atPath: file), let rep = NSBitmapImageRep(data: data), rep.pixelsHigh > 0 else { return nil }
   let scale = Double(rep.pixelsHigh) / height
+  let bright = { (x: Int, y: Int) in Double(rep.colorAt(x: x, y: y)?.brightnessComponent ?? 0) }
+  var counts = [Int](repeating: 0, count: 33)
+  for y in stride(from: 0, to: rep.pixelsHigh, by: 2) {
+    for px in stride(from: 0, to: rep.pixelsWide, by: 4) { counts[min(32, Int(bright(px, y) * 32))] += 1 }
+  }
+  let background = (Double(counts.indices.max { counts[$0] < counts[$1] } ?? 0) + 0.5) / 32
+  let isLine = { (y: Int) -> Bool in
+    var n = 0
+    for px in stride(from: 0, to: rep.pixelsWide, by: 4) where abs(bright(px, y) - background) > 0.1 { n += 1 }
+    return n * 4 >= rep.pixelsWide * 9 / 10
+  }
   var lines: [Double] = []
   var y = 0
   while y < rep.pixelsHigh {
-    var lit = 0
-    for px in stride(from: 0, to: rep.pixelsWide, by: 4) where (rep.colorAt(x: px, y: y)?.brightnessComponent ?? 0) > 0.45 { lit += 1 }
-    if lit * 4 >= rep.pixelsWide * 9 / 10 {
+    if isLine(y) {
       var end = y
-      while end + 1 < rep.pixelsHigh {
-        var n = 0
-        for px in stride(from: 0, to: rep.pixelsWide, by: 4) where (rep.colorAt(x: px, y: end + 1)?.brightnessComponent ?? 0) > 0.45 { n += 1 }
-        if n * 4 >= rep.pixelsWide * 9 / 10 { end += 1 } else { break }
-      }
+      while end + 1 < rep.pixelsHigh, isLine(end + 1) { end += 1 }
       lines.append((Double(y + end) / 2 + 0.5) / scale)
       y = end + 1
     } else { y += 1 }
@@ -227,7 +240,12 @@ var lastFront = ""
 // take every row from there down to the rule (the band, and any hint or notice the engine
 // draws under it), at most `most`: they never reach over the transcript, and where the
 // engine leaves the band fewer rows (a tall prompt) they come out smaller.
-struct Marks { let rule: Int; let under: Int; let collapse: Int?; let tileRows: Int; let band: String }
+// hasText: the rows the pictures cover hold more than the [-] (a hint the engine draws there).
+struct Marks {
+  let rule: Int; let under: Int; let collapse: Int?; let tileRows: Int; let band: String; let hasText: Bool
+  // What the timer compares to notice a change.
+  var key: String { "\(rule):\(collapse.map(String.init) ?? "-"):\(tileRows):\(hasText)" }
+}
 
 func layout(_ lines: [String], _ width: Int, _ most: Int) -> Marks? {
   let rules = lines.enumerated().filter { _, line in
@@ -243,11 +261,15 @@ func layout(_ lines: [String], _ width: Int, _ most: Int) -> Marks? {
     return t.isEmpty ? "_" : (t.hasSuffix("[-]") ? "[-]" : String(t.prefix(6)))
   }.joined(separator: "|")
   let tileRows = collapse.map { min(most, rule - $0) } ?? 0
-  return Marks(rule: rule, under: rules[rules.count - 1], collapse: collapse, tileRows: tileRows, band: band)
+  let hasText = lines[max(0, rule - tileRows)..<rule].contains { l in
+    let t = l.trimmingCharacters(in: .whitespaces)
+    return !t.isEmpty && t != "[-]"
+  }
+  return Marks(rule: rule, under: rules[rules.count - 1], collapse: collapse, tileRows: tileRows, band: band, hasText: hasText)
 }
 
 func marks(_ pane: String, _ width: Int, _ most: Int) -> Marks? {
-  layout(sh([tmuxPath, "capture-pane", "-p", "-t", pane]).components(separatedBy: "\n"), width, most)
+  layout(sh([tmuxPath, "capture-pane", "-p", "-t", pane], trim: false).components(separatedBy: "\n"), width, most)
 }
 
 var debugOn: Bool { FileManager.default.fileExists(atPath: (shelfPath as NSString).deletingLastPathComponent + "/debug.on") }
@@ -260,7 +282,7 @@ func note(_ text: String) {
 
 func place(_ s: Shelf, _ front: String) -> Place? {
   // The screenshot tool takes the front while it runs; the shelf stays for the picture.
-  var found: (tty: String, bounds: [Double])?
+  var found: Session?
   if isForced, !s.tmuxPane.isEmpty {
     let name = sh([tmuxPath, "display", "-p", "-t", s.tmuxPane, "#{session_name}"])
     let tty = sh([tmuxPath, "list-clients", "-t", name, "-F", "#{client_tty} #{client_flags}"]).split(separator: "\n").first { !$0.contains("control-mode") }.map { String($0.split(separator: " ")[0]) } ?? ""
@@ -307,17 +329,19 @@ func place(_ s: Shelf, _ front: String) -> Place? {
   var collapseRow: Double?
   var roomRows = s.rows
   var rules: (Int, Int)?
+  var hasText = false
   if !s.tmuxPane.isEmpty {
     // No band drawn (collapsed, or not yet): nothing to show over.
     // What the timer compares against is noted first, hidden or not, so it asks again only
     // when the text changes.
     let m = marks(s.tmuxPane, Int(paneWidth), MOST_ROWS)
-    lastMarks = m.map { "\($0.rule):\($0.collapse.map(String.init) ?? "-"):\($0.tileRows)" } ?? ""
+    lastMarks = m?.key ?? ""
     lastWidth = Int(paneWidth)
     guard let m, let c = m.collapse, m.tileRows >= 1 else { if debugOn { note("no band: \(lastMarks)") }; return nil }
     bottomRow = paneTop + Double(m.rule)
     collapseRow = paneTop + Double(c)
     roomRows = m.tileRows
+    hasText = m.hasText
     rules = (m.rule, m.under)
     if debugOn { note("rule=\(m.rule) collapse=\(c) tile=\(m.tileRows) above=\(m.band)") }
   }
@@ -332,13 +356,13 @@ func place(_ s: Shelf, _ front: String) -> Place? {
   var chrome = chromes[key] ?? (35.0 + (b[4] > 1 ? 35.0 : 0))
   if chromes[key] == nil, let r = rules {
     let x = b[0] + paneLeft * cellW + 2 * cellW
-    if let found = measureChrome(x: x, top: b[1], height: b[3] - b[1], rows: (Double(r.0) + statusAbove, Double(r.1) + statusAbove), cellH: cellH) {
+    if let found = measureChrome(x: x, top: b[1], height: b[3] - b[1], rows: (paneTop + Double(r.0) + statusAbove, paneTop + Double(r.1) + statusAbove), cellH: cellH) {
       chrome = found
       chromes[key] = found
     }
   }
   let rowTop = { (r: Double) in b[1] + chrome + (r + statusAbove) * cellH }
-  return Place(x: b[0] + paneLeft * cellW + s.dx, bottom: rowTop(bottomRow) + s.dy, width: paneWidth * cellW, cellW: cellW, cellH: cellH, roomRows: roomRows, collapseTop: collapseRow.map { rowTop($0) })
+  return Place(x: b[0] + paneLeft * cellW + s.dx, bottom: rowTop(bottomRow) + s.dy, width: paneWidth * cellW, cellW: cellW, cellH: cellH, roomRows: roomRows, collapseTop: collapseRow.map { rowTop($0) }, profile: session.profile, hasText: hasText)
 }
 
 func image(_ file: String) -> NSImage? {
@@ -386,6 +410,12 @@ strip.verticalScrollElasticity = .none
 strip.autoresizingMask = [.width, .height]
 let shelfView = NSView()
 strip.documentView = shelfView
+// Under the pictures where the engine drew a hint in their rows (a tall prompt leaves the
+// band few rows): the terminal's background, so the hint does not show between and beside
+// them. Only then: on a terminal with a see-through or pictured background it would show.
+let backdrop = NSView()
+backdrop.wantsLayer = true
+content.addSubview(backdrop)
 content.addSubview(strip)
 
 // The engine draws its own [-] (collapse the band) in the band's last five columns. The
@@ -400,20 +430,28 @@ patchPanel.level = .floating
 patchPanel.ignoresMouseEvents = true
 patchPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
-func profileColor(_ key: String) -> NSColor? {
-  guard let profiles = UserDefaults(suiteName: "com.googlecode.iterm2")?.array(forKey: "New Bookmarks") as? [[String: Any]],
-        let c = profiles.first?[key] as? [String: Any],
+// The session's profile by name; the default profile, or the first, when it is not found.
+func profileNamed(_ name: String) -> [String: Any]? {
+  let prefs = UserDefaults(suiteName: "com.googlecode.iterm2")
+  guard let profiles = prefs?.array(forKey: "New Bookmarks") as? [[String: Any]] else { return nil }
+  let guid = prefs?.string(forKey: "Default Bookmark Guid")
+  return profiles.first { ($0["Name"] as? String) == name } ?? profiles.first { ($0["Guid"] as? String) == guid } ?? profiles.first
+}
+
+func colorOf(_ profile: [String: Any], _ key: String) -> NSColor? {
+  guard let c = profile[key] as? [String: Any],
         let r = (c["Red Component"] as? NSNumber)?.doubleValue,
         let g = (c["Green Component"] as? NSNumber)?.doubleValue,
         let b = (c["Blue Component"] as? NSNumber)?.doubleValue else { return nil }
   return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
 }
 
-func backgroundColor() -> NSColor {
+func backgroundColor(_ name: String) -> NSColor {
   let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-  let separate = (UserDefaults(suiteName: "com.googlecode.iterm2")?.array(forKey: "New Bookmarks") as? [[String: Any]])?.first?["Use Separate Colors for Light and Dark Mode"] as? Bool ?? false
+  let profile = profileNamed(name) ?? [:]
+  let separate = profile["Use Separate Colors for Light and Dark Mode"] as? Bool ?? false
   let key = separate ? (isDark ? "Background Color (Dark)" : "Background Color (Light)") : "Background Color"
-  return profileColor(key) ?? profileColor("Background Color") ?? NSColor(srgbRed: 0.08, green: 0.1, blue: 0.12, alpha: 1)
+  return colorOf(profile, key) ?? colorOf(profile, "Background Color") ?? NSColor(srgbRed: 0.08, green: 0.1, blue: 0.12, alpha: 1)
 }
 var lastCount = 0
 
@@ -433,13 +471,27 @@ func draw(_ s: Shelf, _ p: Place) {
   let tileH = height - 7
   let tileW = tileH * ASPECT
   let primary = NSScreen.screens[0].frame.height
-  let frame = NSRect(x: p.x, y: primary - p.bottom, width: p.width, height: height)
+  // With a hint under the pictures, the window reaches a little lower to hide the hint's
+  // descenders too, still well clear of the rule (drawn mid-row).
+  let below = p.hasText ? (p.cellH * 0.3).rounded() : 0
+  let frame = NSRect(x: p.x, y: primary - p.bottom - below, width: p.width, height: height + below)
   if panel.frame != frame { panel.setFrame(frame, display: false) }
+  // The terminal's background, nearly clear: a pixel never quite clear keeps the clicks (see
+  // above) and, the same colour as what it lies on, cannot be seen on a light one either.
+  let background = backgroundColor(p.profile)
+  let isLight = (background.usingColorSpace(.sRGB)?.brightnessComponent ?? 0) > 0.5
+  let tint = background.withAlphaComponent(0.01)
+  if panel.backgroundColor != tint { panel.backgroundColor = tint }
   let reserved = 5 * p.cellW
-  let stripFrame = NSRect(x: 0, y: 0, width: p.width - reserved, height: height)
+  let stripFrame = NSRect(x: 0, y: below, width: p.width - reserved, height: height)
   if strip.frame != stripFrame { strip.frame = stripFrame }
+  // As high as the pictures reach (they keep clear of the row above).
+  let backdropFrame = NSRect(x: 0, y: 0, width: p.width, height: below + height - 5)
+  if backdrop.frame != backdropFrame { backdrop.frame = backdropFrame }
+  backdrop.layer?.backgroundColor = background.cgColor
+  backdrop.isHidden = !p.hasText
   if let top = p.collapseTop {
-    patchPanel.backgroundColor = backgroundColor()
+    patchPanel.backgroundColor = background
     // The font's brackets reach past their cell (tight line spacing): a third of a row more
     // above and below, short of the rules, whose strokes sit mid-row.
     let extra = p.cellH * 0.35
@@ -449,7 +501,7 @@ func draw(_ s: Shelf, _ p: Place) {
   } else {
     patchPanel.orderOut(nil)
   }
-  let key = s.items.map { "\($0.n):\($0.thumb):\($0.edited)" }.joined(separator: ",") + "@\(p.width)x\(height)"
+  let key = s.items.map { "\($0.n):\($0.thumb):\($0.edited)" }.joined(separator: ",") + "@\(p.width)x\(height)\(isLight ? "L" : "D")"
   if key == drawnKey { return }
   drawnKey = key
   shelfView.subviews.forEach { $0.removeFromSuperview() }
@@ -463,10 +515,11 @@ func draw(_ s: Shelf, _ p: Place) {
     tile.file = item.copy
     tile.n = item.n
     tile.wantsLayer = true
-    tile.layer?.backgroundColor = NSColor(white: 0.08, alpha: 0.95).cgColor
+    // What the picture leaves of its tile: a shade off the terminal's background.
+    tile.layer?.backgroundColor = (isLight ? NSColor(white: 0.88, alpha: 0.95) : NSColor(white: 0.08, alpha: 0.95)).cgColor
     tile.layer?.cornerRadius = 4
     tile.layer?.borderWidth = item.edited ? 2 : 1
-    tile.layer?.borderColor = (item.edited ? NSColor.systemOrange : NSColor.white.withAlphaComponent(0.35)).cgColor
+    tile.layer?.borderColor = (item.edited ? NSColor.systemOrange : (isLight ? NSColor.black.withAlphaComponent(0.25) : NSColor.white.withAlphaComponent(0.35))).cgColor
     tile.layer?.masksToBounds = true
     tile.toolTip = "Image #\(item.n)：點一下標註"
     shelfView.addSubview(tile)
@@ -627,7 +680,7 @@ Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
     // Hidden too (the band collapsed, then opened again): the text says when it is back.
     if !changed, !pane.isEmpty {
       let m = marks(pane, lastWidth, MOST_ROWS)
-      let now = m.map { "\($0.rule):\($0.collapse.map(String.init) ?? "-"):\($0.tileRows)" } ?? ""
+      let now = m?.key ?? ""
       if now != lastMarks { changed = true }
     }
     if changed { DispatchQueue.main.async { ask() } }
