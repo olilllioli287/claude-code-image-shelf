@@ -2,6 +2,8 @@
 
 **繁體中文** | [English](#english)
 
+![demo](docs/demo.gif)
+
 Claude Code 的 mod（外掛）。貼上的圖片會排在輸入框左上方，顯示成真正的縮圖；點一下就能畫圈、加箭頭、寫字、裁切，Claude 收到的是標註過的版本。
 
 在終端機裡，貼上的圖片只會顯示成 `[Image #3]`，貼了幾張之後就分不清哪張是哪張。Claude Code 內建的圖片元件只在 Ghostty、kitty 這類終端機畫得出來，**iTerm2 和 tmux 裡看不到**。image-shelf 在那種環境改用一個浮在終端機上方的透明小視窗來顯示圖片，像桌寵一樣。
