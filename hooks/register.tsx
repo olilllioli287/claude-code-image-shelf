@@ -248,10 +248,12 @@ const writeShelf = async ($: EngineInterface, list: Shot[], isVisible: boolean, 
   const items = list.filter(s => s.thumb !== '').map(s => ({ n: s.n, thumb: s.thumb, copy: s.copy, edited: s.isEdited }))
   const editorBinary = items.length > 0 ? ((await buildEditor($)) ?? '') : ''
   const shelf = JSON.stringify({ visible: isVisible && items.length > 0, items, rows: PANEL_ROWS, rowsBelow, editor: editorBinary, page: `${$.plugin.root}/editor/editor.html`, tmuxPane, maxRows: lastMaxRows, dx: tuning.dx, dy: tuning.dy })
-  if (shelf === lastShelf) return
-  lastShelf = shelf
   const file = `${edits}/shelf.json`
-  await $.fs.write(file, shelf)
+  if (shelf !== lastShelf) {
+    lastShelf = shelf
+    await $.fs.write(file, shelf)
+  }
+  // Started again if it quit (or was stopped) while there are pictures to show.
   if (items.length > 0 && !isPanelUp) void startPanel($, file)
 }
 
@@ -288,7 +290,7 @@ export const register: Register = on => {
     const { canDraw } = await setUp($)
     const ns = await read($, inBox)
     const all = await read($, shots)
-    const isShown = e.surface === 'terminal' && !e.props.hasSurvey && !e.props.isWorking && ns.length > 0
+    const isShown = e.surface === 'terminal' && !e.props.hasSurvey && ns.length > 0
     lastColumns = e.props.bodyColumns
     lastMaxRows = e.props.maxRows
     lastShown = isShown
@@ -298,7 +300,7 @@ export const register: Register = on => {
     const rows = Math.max(3, Math.min(ROWS, e.props.maxRows - 2))
 
     // Where the terminal cannot draw, blank rows for the floating window to cover.
-    const room = !canDraw && !e.props.isWorking && all.some(s => ns.includes(s.n) && s.thumb !== '')
+    const room = !canDraw && all.some(s => ns.includes(s.n) && s.thumb !== '')
       ? <Box key="room" height={Math.max(1, Math.min(PANEL_ROWS, e.props.maxRows))} />
       : null
 

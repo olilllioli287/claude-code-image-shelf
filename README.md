@@ -62,8 +62,7 @@ Claude Code 的 mod（外掛）。貼上的圖片會排在輸入框左上方，�
 ## 已知限制
 
 - 只在 macOS + iTerm2（+ tmux）+ Ghostty 測過；Terminal.app、WezTerm 等未測
-- 浮動視窗跟著視窗移動會慢一點（放開滑鼠才對齊）
-- 用鍵盤切 iTerm2 分頁時，最多 20 秒才隱藏
+- 拖動視窗時，圖片約每 0.5 秒跟上一次
 - 依賴 Claude Code 存貼上圖片的暫存資料夾位置（內部結構，不是公開 API）
 
 ## 一起開發

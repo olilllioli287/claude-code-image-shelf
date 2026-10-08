@@ -167,6 +167,13 @@ func sessionByTty(_ tty: String) -> (tty: String, bounds: [Double])? {
   return (tty, numbers)
 }
 
+// The app the person is in. Not frontmostApplication: a menu-bar app that activates itself
+// for a popover stays "frontmost" there after its popover closes, though the menu bar
+// (and the keyboard) went back to the terminal.
+func frontApp() -> NSRunningApplication? {
+  NSWorkspace.shared.menuBarOwningApplication ?? NSWorkspace.shared.frontmostApplication
+}
+
 // Row offsets measured per window shape (see place()).
 var chromes: [String: Double] = [:]
 
@@ -210,6 +217,7 @@ var screens: [(frame: NSRect, scale: Double)] = []
 // (the engine showing or dropping a notice row in the band).
 var lastMarks = ""
 var lastWidth = 80
+var lastFront = ""
 
 // The row of the prompt's top rule: of the lines drawn all in "─" across most of the
 // pane, the second from the bottom (the last is the rule under the prompt).
@@ -242,7 +250,7 @@ func marks(_ pane: String, _ width: Int, _ most: Int) -> Marks? {
   layout(sh([tmuxPath, "capture-pane", "-p", "-t", pane]).components(separatedBy: "\n"), width, most)
 }
 
-let debugOn = FileManager.default.fileExists(atPath: (shelfPath as NSString).deletingLastPathComponent + "/debug.on")
+var debugOn: Bool { FileManager.default.fileExists(atPath: (shelfPath as NSString).deletingLastPathComponent + "/debug.on") }
 let debugPath = (shelfPath as NSString).deletingLastPathComponent + "/debug.txt"
 func note(_ text: String) {
   let line = "\(Date()) \(text)\n"
@@ -260,7 +268,8 @@ func place(_ s: Shelf, _ front: String) -> Place? {
   } else if front == "com.googlecode.iterm2" || front == "com.apple.screencaptureui" || front == "com.apple.screenshot.launcher" {
     found = frontSession()
   }
-  guard let session = found else { return nil }
+  if !isForced { lastFront = found.map { "\($0.tty)|\($0.bounds)" } ?? "" }
+  guard let session = found else { if debugOn { note("no session front=\(front)") }; return nil }
   let primaryHeight = screens.first?.frame.height ?? 0
   let scale = screens.first { $0.frame.contains(NSPoint(x: session.bounds[0] + 1, y: primaryHeight - session.bounds[3] + 1)) }?.scale ?? 2
   var cellW = 0.0, cellH = 0.0, totalRows = 0.0, paneTop = 0.0, paneLeft = 0.0, paneHeight = 0.0, paneWidth = 0.0
@@ -270,9 +279,9 @@ func place(_ s: Shelf, _ front: String) -> Place? {
     let client = sh([tmuxPath, "list-clients", "-F", "#{client_tty} #{client_cell_width} #{client_cell_height} #{client_height} #{session_name}"])
       .split(separator: "\n").map { $0.split(separator: " ").map(String.init) }.first { $0.first == session.tty }
     let pane = sh([tmuxPath, "display", "-p", "-t", s.tmuxPane, "#{session_name} #{pane_top} #{pane_left} #{pane_height} #{pane_width} #{window_active} #{pane_in_mode} #{window_zoomed_flag} #{pane_active}"]).split(separator: " ").map(String.init)
-    guard let c = client, c.count == 5, pane.count == 9, c[4] == pane[0] else { return nil }
+    guard let c = client, c.count == 5, pane.count == 9, c[4] == pane[0] else { if debugOn { note("no client/pane: \(client ?? []) \(pane)") }; return nil }
     let f = [c[0], c[1], c[2], c[3], pane[1], pane[2], pane[3], pane[4], pane[5], pane[6], pane[7], pane[8]]
-    guard f[8] == "1", f[9] == "0" else { return nil }
+    guard f[8] == "1", f[9] == "0" else { if debugOn { note("window inactive or pane in mode: \(f)") }; return nil }
     // Another pane zoomed over ours hides it.
     if f[10] == "1" && f[11] == "0" { return nil }
     cellW = (Double(f[1]) ?? 0) / scale; cellH = (Double(f[2]) ?? 0) / scale
@@ -300,13 +309,16 @@ func place(_ s: Shelf, _ front: String) -> Place? {
   var rules: (Int, Int)?
   if !s.tmuxPane.isEmpty {
     // No band drawn (collapsed, or not yet): nothing to show over.
-    guard let m = marks(s.tmuxPane, Int(paneWidth), MOST_ROWS), let c = m.collapse, m.tileRows >= 1 else { return nil }
+    // What the timer compares against is noted first, hidden or not, so it asks again only
+    // when the text changes.
+    let m = marks(s.tmuxPane, Int(paneWidth), MOST_ROWS)
+    lastMarks = m.map { "\($0.rule):\($0.collapse.map(String.init) ?? "-"):\($0.tileRows)" } ?? ""
+    lastWidth = Int(paneWidth)
+    guard let m, let c = m.collapse, m.tileRows >= 1 else { if debugOn { note("no band: \(lastMarks)") }; return nil }
     bottomRow = paneTop + Double(m.rule)
     collapseRow = paneTop + Double(c)
     roomRows = m.tileRows
     rules = (m.rule, m.under)
-    lastMarks = "\(m.rule):\(c):\(m.tileRows)"
-    lastWidth = Int(paneWidth)
     if debugOn { note("rule=\(m.rule) collapse=\(c) tile=\(m.tileRows) above=\(m.band)") }
   }
   // iTerm2 lays the rows out from the top of the window: under the title bar (and the tab
@@ -508,6 +520,7 @@ func render() {
 }
 
 func ask() {
+  if debugOn { note("ask front=\(frontApp()?.bundleIdentifier ?? "-")") }
   guard let s = shelf, s.visible, !s.items.isEmpty else {
     lastPlace = nil
     return render()
@@ -516,7 +529,7 @@ func ask() {
   if isAsking { askAgain = true; return }
   isAsking = true
   screens = NSScreen.screens.map { ($0.frame, Double($0.backingScaleFactor)) }
-  let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+  let front = frontApp()?.bundleIdentifier ?? ""
   asking.async {
     let p = place(s, front)
     DispatchQueue.main.async {
@@ -596,17 +609,28 @@ NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { _ in
 }
 Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in readShelf() }
 Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { _ in ask() }
-// While pictures show: the pane's text read twice a second (a few milliseconds, off the
-// main thread), and the panel placed again only when the band or the rule moved.
+// While pictures are wanted: twice a second, off the main thread, the front iTerm2 session
+// and window (a tab switched from the keyboard, a window being dragged) and the pane's
+// text (the band or the rule moved); the panel is placed again only when one changed.
 Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
-  guard let s = shelf, s.visible, !s.items.isEmpty, lastPlace != nil, !s.tmuxPane.isEmpty, !isAsking else { return }
+  guard let s = shelf, s.visible, !s.items.isEmpty, !isAsking else { return }
+  let front = frontApp()?.bundleIdentifier ?? ""
+  guard front == "com.googlecode.iterm2" || isForced else { return }
   let pane = s.tmuxPane
-  // lastMarks and lastWidth are written by place(), on this same queue.
+  // lastFront, lastMarks and lastWidth are written by place(), on this same queue.
   asking.async {
-    let was = lastMarks
-    let m = marks(pane, lastWidth, MOST_ROWS)
-    let now = m.map { "\($0.rule):\($0.collapse.map(String.init) ?? "-"):\($0.tileRows)" } ?? ""
-    if now != was { DispatchQueue.main.async { ask() } }
+    var changed = false
+    if !isForced {
+      let now = frontSession().map { "\($0.tty)|\($0.bounds)" } ?? ""
+      if now != lastFront { changed = true }
+    }
+    // Hidden too (the band collapsed, then opened again): the text says when it is back.
+    if !changed, !pane.isEmpty {
+      let m = marks(pane, lastWidth, MOST_ROWS)
+      let now = m.map { "\($0.rule):\($0.collapse.map(String.init) ?? "-"):\($0.tileRows)" } ?? ""
+      if now != lastMarks { changed = true }
+    }
+    if changed { DispatchQueue.main.async { ask() } }
   }
 }
 readShelf()
