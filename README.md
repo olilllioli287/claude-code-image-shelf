@@ -18,6 +18,16 @@ Claude Code 的 mod（外掛）。貼上的圖片會排在輸入框左上方，�
 
 問要不要加入來源時按 `y`，範圍選 user。第一次貼圖會花幾秒編譯浮動視窗和編輯器。
 
+## 移除與重裝
+
+```
+/plugin uninstall image-shelf@image-shelf
+```
+
+想連來源一起移除：`/plugin marketplace remove image-shelf`。之後要再裝，照上面的安裝指令再打一次就好，可以重複。
+
+不會留下東西在你的設定裡：編譯出來的程式放在 `/private/tmp/image-shelf/`（重開機會自動清掉）；只有你自己建立了 `~/.config/image-shelf.json` 才需要手動刪。
+
 ## 需求
 
 - macOS，Xcode Command Line Tools（`xcode-select --install`），用來編譯浮動視窗
@@ -77,6 +87,8 @@ Claude Code's own `Image` element draws only in terminals with the kitty graphic
 **Needs**: macOS, Xcode Command Line Tools, iTerm2 with Screen Recording permission (to measure where rows start), or Ghostty/kitty outside tmux.
 
 **Use**: paste as usual (no popup); swipe or Shift+wheel to scroll a long row; click a picture to annotate it (pen, ellipse, box, arrow, text, crop, rotate). An edited picture gets an orange border; on send, Claude is told to read the edited file.
+
+**Uninstall**: `/plugin uninstall image-shelf@image-shelf` (and `/plugin marketplace remove image-shelf`); reinstall with the install line above.
 
 **Tuning**: `~/.config/image-shelf.json` → `{ "dx": 0, "dy": -5.5 }` (points; negative moves up).
 
