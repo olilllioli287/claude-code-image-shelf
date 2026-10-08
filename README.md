@@ -66,6 +66,10 @@ Claude Code 的 mod（外掛）。貼上的圖片會排在輸入框左上方，�
 - 用鍵盤切 iTerm2 分頁時，最多 20 秒才隱藏
 - 依賴 Claude Code 存貼上圖片的暫存資料夾位置（內部結構，不是公開 API）
 
+## 一起開發
+
+目前只支援 macOS，最需要 **Windows 和 Linux** 的幫手。運作原理看 [ARCHITECTURE.md](ARCHITECTURE.md)，怎麼參與看 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
 ## 致謝
 
 標註編輯器（`editor/`）取自 [alan890104/claude-code-paste-preview](https://github.com/alan890104/claude-code-paste-preview)（MIT），未修改。
@@ -91,5 +95,7 @@ Claude Code's own `Image` element draws only in terminals with the kitty graphic
 **Uninstall**: `/plugin uninstall image-shelf@image-shelf` (and `/plugin marketplace remove image-shelf`); reinstall with the install line above.
 
 **Tuning**: `~/.config/image-shelf.json` → `{ "dx": 0, "dy": -5.5 }` (points; negative moves up).
+
+**Contributing**: macOS only for now; Windows and Linux help wanted. See [ARCHITECTURE.md](ARCHITECTURE.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The markup editor (`editor/`) is from [alan890104/claude-code-paste-preview](https://github.com/alan890104/claude-code-paste-preview) (MIT), unmodified.
