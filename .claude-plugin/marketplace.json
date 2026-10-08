@@ -1,0 +1,6 @@
+{
+  "name": "image-shelf",
+  "description": "image-shelf: see the images you paste into Claude Code, in iTerm2 and tmux too",
+  "owner": { "name": "olilllioli287" },
+  "plugins": [{ "name": "image-shelf", "source": "./" }]
+}
