@@ -13,7 +13,8 @@
 
 import AppKit
 
-struct Item: Decodable { let n: Int; let thumb: String; let copy: String; let edited: Bool }
+// label: what the badge says; a HEIC photo (no [Image #N] of its own) brings "HEIC 1" and so on.
+struct Item: Decodable { let n: Int; let thumb: String; let copy: String; let edited: Bool; let label: String? }
 struct Shelf: Decodable {
   let visible: Bool
   let items: [Item]
@@ -38,13 +39,14 @@ struct Place { let x: Double; let bottom: Double; let width: Double; let cellW: 
 final class Thumb: NSImageView {
   var file = ""
   var n = 0
+  var label = ""
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   // The markup editor on the copy, writing the edit over it; Preview where it is not built.
   override func mouseDown(with event: NSEvent) {
     if let editor = shelf?.editor, !editor.isEmpty, let page = shelf?.page {
       let p = Process()
       p.executableURL = URL(fileURLWithPath: editor)
-      p.arguments = [page, file, file, "Image #\(n)", "zh-Hant"]
+      p.arguments = [page, file, file, label.isEmpty ? "Image #\(n)" : label, "zh-Hant"]
       p.standardOutput = FileHandle.nullDevice
       if (try? p.run()) != nil { return }
     }
@@ -247,6 +249,13 @@ struct Marks {
   var key: String { "\(rule):\(collapse.map(String.init) ?? "-"):\(tileRows):\(hasText)" }
 }
 
+// Functions, not globals: --probe runs above where this file's globals are set.
+// A pane's frame spans the pane; a box drawn in the transcript is narrower.
+func isFrame(_ l: String, _ width: Int, _ open: Character, _ close: Character) -> Bool {
+  let t = l.trimmingCharacters(in: .whitespaces)
+  return t.first == open && t.last == close && t.count >= width * 9 / 10
+}
+
 func layout(_ lines: [String], _ width: Int, _ most: Int) -> Marks? {
   let rules = lines.enumerated().filter { _, line in
     let t = line.trimmingCharacters(in: .whitespaces)
@@ -260,7 +269,15 @@ func layout(_ lines: [String], _ width: Int, _ most: Int) -> Marks? {
     let t = l.trimmingCharacters(in: .whitespaces)
     return t.isEmpty ? "_" : (t.hasSuffix("[-]") ? "[-]" : String(t.prefix(6)))
   }.joined(separator: "|")
-  let tileRows = collapse.map { min(most, rule - $0) } ?? 0
+  var tileRows = collapse.map { min(most, rule - $0) } ?? 0
+  // Another plugin's pane opened above the prompt (claude-console's, say) can leave the band
+  // a row or none. With its frame's bottom just above the rule, the pictures take the pane's
+  // last rows too, over the backdrop, while they are in the prompt; never past its top.
+  if tileRows < 3, let bottom = lines[max(0, rule - 3)..<rule].lastIndex(where: { isFrame($0, width, "╰", "╯") }),
+     let top = lines[..<bottom].lastIndex(where: { isFrame($0, width, "╭", "╮") }) {
+    // As many rows as the band would hold.
+    tileRows = max(tileRows, min(4, most, rule - top - 1))
+  }
   let hasText = lines[max(0, rule - tileRows)..<rule].contains { l in
     let t = l.trimmingCharacters(in: .whitespaces)
     return !t.isEmpty && t != "[-]"
@@ -337,13 +354,13 @@ func place(_ s: Shelf, _ front: String) -> Place? {
     let m = marks(s.tmuxPane, Int(paneWidth), MOST_ROWS)
     lastMarks = m?.key ?? ""
     lastWidth = Int(paneWidth)
-    guard let m, let c = m.collapse, m.tileRows >= 1 else { if debugOn { note("no band: \(lastMarks)") }; return nil }
+    guard let m, m.tileRows >= 1 else { if debugOn { note("no band: \(lastMarks)") }; return nil }
     bottomRow = paneTop + Double(m.rule)
-    collapseRow = paneTop + Double(c)
+    collapseRow = m.collapse.map { paneTop + Double($0) }
     roomRows = m.tileRows
     hasText = m.hasText
     rules = (m.rule, m.under)
-    if debugOn { note("rule=\(m.rule) collapse=\(c) tile=\(m.tileRows) above=\(m.band)") }
+    if debugOn { note("rule=\(m.rule) collapse=\(m.collapse.map(String.init) ?? "-") tile=\(m.tileRows) above=\(m.band)") }
   }
   // iTerm2 lays the rows out from the top of the window: under the title bar (and the tab
   // bar, shown once a window has two tabs) and a small margin; what the rows leave over
@@ -514,6 +531,7 @@ func draw(_ s: Shelf, _ p: Place) {
     tile.imageScaling = .scaleProportionallyDown
     tile.file = item.copy
     tile.n = item.n
+    tile.label = item.label ?? ""
     tile.wantsLayer = true
     // What the picture leaves of its tile: a shade off the terminal's background.
     tile.layer?.backgroundColor = (isLight ? NSColor(white: 0.88, alpha: 0.95) : NSColor(white: 0.08, alpha: 0.95)).cgColor
@@ -521,9 +539,10 @@ func draw(_ s: Shelf, _ p: Place) {
     tile.layer?.borderWidth = item.edited ? 2 : 1
     tile.layer?.borderColor = (item.edited ? NSColor.systemOrange : (isLight ? NSColor.black.withAlphaComponent(0.25) : NSColor.white.withAlphaComponent(0.35))).cgColor
     tile.layer?.masksToBounds = true
-    tile.toolTip = "Image #\(item.n)：點一下標註"
+    let name = item.label ?? "#\(item.n)"
+    tile.toolTip = "\(item.label ?? "Image #\(item.n)")：點一下標註"
     shelfView.addSubview(tile)
-    let badge = NSTextField(labelWithString: item.edited ? " #\(item.n) 已編輯 " : " #\(item.n) ")
+    let badge = NSTextField(labelWithString: item.edited ? " \(name) 已編輯 " : " \(name) ")
     badge.font = .boldSystemFont(ofSize: tileRows <= 2 ? 9 : 11)
     badge.textColor = .white
     badge.drawsBackground = true

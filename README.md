@@ -41,6 +41,7 @@ Claude Code 的 mod（外掛）。貼上的圖片會排在輸入框左上方，�
 - 圖片超過一排：觸控板左右滑，或按住 Shift 滾滾輪
 - 點圖片：打開標註編輯器（P 畫筆、O 圓、B 框、A 箭頭、T 文字、C 裁切、R 旋轉、Enter 完成、Esc 取消）
 - 編輯過的圖會加上橘框和「已編輯」；送出時 Claude 會被告知去讀編輯版（原圖仍會附上，mod 無法替換已貼上的圖）
+- HEIC 照片（iPhone 拍的）：Claude Code 本身不收 HEIC，貼上或拖進來只會變成一串路徑。image-shelf 會把路徑指到的 `.heic` / `.heif` 轉成 PNG，一樣排在架子上（標成「HEIC 1」），可以點開標註；送出時 Claude 會被告知去讀轉好的 PNG
 
 ## 運作方式
 
@@ -89,7 +90,7 @@ Claude Code's own `Image` element draws only in terminals with the kitty graphic
 
 **Needs**: macOS, Xcode Command Line Tools, iTerm2 with Screen Recording permission (to measure where rows start), or Ghostty/kitty outside tmux.
 
-**Use**: paste as usual (no popup); swipe or Shift+wheel to scroll a long row; click a picture to annotate it (pen, ellipse, box, arrow, text, crop, rotate). An edited picture gets an orange border; on send, Claude is told to read the edited file.
+**Use**: paste as usual (no popup); swipe or Shift+wheel to scroll a long row; click a picture to annotate it (pen, ellipse, box, arrow, text, crop, rotate). An edited picture gets an orange border; on send, Claude is told to read the edited file. HEIC photos, which Claude Code does not attach (a path to one stays text), are converted to PNG, shown on the shelf as "HEIC 1", and Claude is told to read the PNG.
 
 **Uninstall**: `/plugin uninstall image-shelf@image-shelf` (and `/plugin marketplace remove image-shelf`); reinstall with the install line above.
 

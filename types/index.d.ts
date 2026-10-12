@@ -12,6 +12,9 @@ export type Shot = {
   gen: number
   width: number
   height: number
+  // A HEIC photo's: what its badge says ("HEIC 1"), and the photo it was converted from.
+  label?: string
+  source?: string
 }
 
 declare module 'claude-code' {
