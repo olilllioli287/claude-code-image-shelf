@@ -99,7 +99,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMess
     panel = Panel(contentRect: frame, styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.titleVisibility = .hidden
     panel.titlebarAppearsTransparent = true
-    panel.level = .floating
+    // A level above the shelf's own windows (floating): the shelf orders itself to the front
+    // each time it redraws, and its backdrop would then lie over Done and Cancel.
+    panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     panel.hidesOnDeactivate = false
     panel.isReleasedWhenClosed = false
