@@ -48,6 +48,32 @@ let lastShown = false
 const capturing = new Set<number>()
 const thumbs = new Map<string, string>()
 
+// What went wrong, for a session whose shelf stays empty: `claude --debug` shows it in the
+// debug log, and this file has it either way. A failure is not kept: the next look tries again.
+const ERRORS = '/private/tmp/image-shelf/errors.log'
+// A Swift build that failed is tried again this long after, not at every tick.
+const RETRY_MS = 30_000
+const reported = new Map<string, string>()
+let writing = Promise.resolve()
+let setupFailures = 0
+
+const report = ($: EngineInterface, where: string, err: unknown) => {
+  const text = err instanceof Error ? err.message : String(err)
+  // The tick comes every 0.7 s: a failure that keeps happening is written once.
+  if (reported.get(where) === text) return
+  reported.set(where, text)
+  $.ui.log(`image-shelf ${where}: ${text}`, { to: 'debug' })
+  writing = writing.then(async () => {
+    const session = await $.session.id().catch(() => '-')
+    const old = await $.fs.read(ERRORS).catch(() => '')
+    const lines = [...old.split('\n').filter(line => line !== ''), `${new Date().toISOString()} ${session.slice(0, 8)} ${where}: ${text}`]
+    await $.fs.write(ERRORS, `${lines.slice(-200).join('\n')}\n`)
+  }).catch(() => undefined)
+}
+
+// Working again: the same failure, should it come back, is written again.
+const recovered = (where: string) => void reported.delete(where)
+
 const numbersIn = (text: string) => [...new Set([...text.matchAll(PLACEHOLDER)].map(m => Number(m[1])))]
 
 // HEIC / HEIF photos (what an iPhone takes): Claude Code does not take them as images, so a
@@ -83,7 +109,8 @@ const heicsIn = async ($: EngineInterface, text: string) => {
 const isSame = (a: readonly number[], b: readonly number[]) => a.length === b.length && a.every((n, i) => n === b[i])
 
 const setUp = ($: EngineInterface) => {
-  setup ??= (async () => {
+  if (setup !== undefined) return setup
+  const attempt = (async () => {
     const session = await $.session.id()
     const uid = (await $.process.run(['id', '-u'])).stdout.trim()
     const edits = `/private/tmp/image-shelf/${session.slice(0, 8)}`
@@ -92,7 +119,17 @@ const setUp = ($: EngineInterface) => {
     const canDraw = !tmux && (/^(ghostty|wezterm)$/i.test(program ?? '') || /kitty|ghostty/i.test(term ?? ''))
     return { edits, tmp: `/private/tmp/claude-${uid}`, session, canDraw, tmuxPane: tmux ? (tmuxPane ?? '') : '', home: home ?? '' }
   })()
-  return setup
+  setup = attempt
+  attempt.then(() => {
+    setupFailures = 0
+    recovered('setup')
+  }, err => {
+    if (setup === attempt) setup = undefined
+    setupFailures += 1
+    report($, 'setup', err)
+    if (setupFailures === 5) $.ui.toast(`image-shelf 啟動失敗，還在重試（記錄在 ${ERRORS}）`)
+  })
+  return attempt
 }
 
 // A /clear (or a resume into another conversation) goes on under a new session id, and
@@ -218,6 +255,7 @@ const tick = async ($: EngineInterface) => {
       const told = Number(/"rows":(\d+)/.exec(await $.fs.read(`${edits}/layout.json`).catch(() => ''))?.[1] ?? PANEL_ROWS)
       if (told !== (await read($, roomRows))) await update($, roomRows, () => told)
     }
+    recovered('tick')
   } finally {
     isTicking = false
   }
@@ -246,6 +284,13 @@ const pictureOf = async ($: EngineInterface, shot: Shot) => {
   return base64
 }
 
+// What a failed command said: its error lines, or its last lines when it marked none.
+const tail = (text: string) => {
+  const lines = text.trim().split('\n').map(line => line.trim())
+  const errors = lines.filter(line => line.includes('error:'))
+  return (errors.length > 0 ? errors : lines).slice(-3).join(' / ')
+}
+
 // A Swift program of the mod's, compiled once per version of its source and named by it.
 const build = async ($: EngineInterface, source: string, name: string) => {
   const text = await $.fs.read(source)
@@ -254,16 +299,25 @@ const build = async ($: EngineInterface, source: string, name: string) => {
   if (await $.fs.exists(binary).catch(() => false)) return binary
   await $.process.run(['mkdir', '-p', '/private/tmp/image-shelf/bin'])
   const part = `${binary}.${crypto.randomUUID().slice(0, 8)}`
-  const made = await $.process.run(['xcrun', 'swiftc', '-O', source, '-o', part], { timeoutMs: 180_000 }).catch(() => undefined)
-  if (made?.exitCode !== 0) return undefined
-  return (await $.process.run(['mv', '-f', part, binary])).exitCode === 0 ? binary : undefined
+  const made = await $.process.run(['xcrun', 'swiftc', '-O', source, '-o', part], { timeoutMs: 180_000 })
+  if (made.exitCode !== 0) throw new Error(`swiftc ${name}.swift: ${tail(made.stderr)}`)
+  const moved = await $.process.run(['mv', '-f', part, binary])
+  if (moved.exitCode !== 0) throw new Error(`mv ${name}: ${tail(moved.stderr)}`)
+  return binary
 }
 
 // The floating window, and the markup editor (editor/, from paste-preview, MIT).
 const buildPanel = ($: EngineInterface) => build($, `${$.plugin.root}/panel/shelf.swift`, 'shelf')
 let editor: Promise<string | undefined> | undefined
+let editorRetryAt = 0
 const buildEditor = ($: EngineInterface) => {
-  editor ??= build($, `${$.plugin.root}/editor/editor.swift`, 'editor').catch(() => undefined)
+  if (editor === undefined && Date.now() < editorRetryAt) return Promise.resolve(undefined)
+  editor ??= build($, `${$.plugin.root}/editor/editor.swift`, 'editor').catch(err => {
+    report($, 'editor', err)
+    editorRetryAt = Date.now() + RETRY_MS
+    editor = undefined
+    return undefined
+  })
   return editor
 }
 
@@ -277,23 +331,44 @@ const tuningOf = async ($: EngineInterface, home: string): Promise<Tuning> => {
 }
 
 // Started the first time there is something to show; it quits with Claude Code.
+let panelRetryAt = 0
+let isPanelFailureShown = false
 const startPanel = ($: EngineInterface, shelfFile: string) => {
+  if (panel === undefined && Date.now() < panelRetryAt) return Promise.resolve(undefined)
   panel ??= (async () => {
     const binary = await buildPanel($)
-    if (binary === undefined) {
-      $.ui.toast('image-shelf：浮動視窗編譯失敗（需要 Xcode Command Line Tools）')
-      return undefined
-    }
     isPanelUp = true
+    const startedAt = Date.now()
     void (async () => {
+      const child = $.process.spawn({ argv: [binary, shelfFile] })
       try {
-        for await (const _ of $.process.spawn({ argv: [binary, shelfFile] })) { /* it says nothing */ }
-      } catch {}
+        for await (const _ of child) { /* it says nothing */ }
+        const { code, signal } = await child.result
+        // pkill, on a reload or a /clear, ends it with SIGTERM; it quits by itself with 0.
+        const isCrash = signal === null ? code !== 0 : !['SIGTERM', 'SIGKILL', 'SIGHUP', 'SIGINT'].includes(signal)
+        if (isCrash) {
+          report($, 'panel', `shelf ended with ${signal ?? `code ${code}`}`)
+          // One that dies right away waits before it starts again, not 0.7 s.
+          if (Date.now() - startedAt < 5_000) panelRetryAt = Date.now() + RETRY_MS
+        } else if (Date.now() - startedAt >= 5_000) {
+          recovered('panel')
+        }
+      } catch (err) {
+        report($, 'panel', err)
+        panelRetryAt = Date.now() + RETRY_MS
+      }
       isPanelUp = false
       panel = undefined
     })()
     return binary
-  })().catch(() => undefined)
+  })().catch(err => {
+    report($, 'panel', err)
+    if (!isPanelFailureShown) $.ui.toast('image-shelf：浮動視窗編譯失敗（需要 Xcode Command Line Tools）')
+    isPanelFailureShown = true
+    panelRetryAt = Date.now() + RETRY_MS
+    panel = undefined
+    return undefined
+  })
   return panel
 }
 
@@ -328,13 +403,13 @@ export const register: Register = on => {
     // A reload (or a new version of the mod) brings a fresh panel: the one an earlier load
     // started for this session goes, so an edited panel/shelf.swift takes effect.
     void setUp($).then(({ edits }) => $.process.run(['pkill', '-f', `image-shelf/bin/shelf-[0-9a-f]+ ${edits}/shelf.json`])).catch(() => undefined)
-    $.clock.every(700, () => void tick($).catch(() => undefined))
+    $.clock.every(700, () => void tick($).catch(err => report($, 'tick', err)))
     return next(e)
   })
 
   on('prompt.edit', async ($, e, next) => {
     const box = await next(e)
-    await sync($, box.text).catch(() => undefined)
+    await sync($, box.text).catch(err => report($, 'sync', err))
     return box
   })
 
@@ -360,14 +435,17 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const { canDraw } = await setUp($)
+    // Not set up yet (setUp has written why, and tries again): the band is left as it is.
+    const ready = await setUp($).catch(() => undefined)
+    if (ready === undefined) return next(e)
+    const { canDraw } = ready
     const ns = await read($, inBox)
     const all = await read($, shots)
     const isShown = e.surface === 'terminal' && !e.props.hasSurvey && ns.length > 0
     lastColumns = e.props.bodyColumns
     lastMaxRows = e.props.maxRows
     lastShown = isShown
-    if (!canDraw) void writeShelf($, ns.flatMap(n => all.filter(s => s.n === n)), isShown, e.props.bodyColumns).catch(() => undefined)
+    if (!canDraw) void writeShelf($, ns.flatMap(n => all.filter(s => s.n === n)), isShown, e.props.bodyColumns).catch(err => report($, 'shelf', err))
     if (e.surface !== 'terminal' || e.props.hasSurvey || ns.length === 0) return next(e)
     const { Box, Text, Button, Image } = $.ui.resolve(e)
     const rows = Math.max(3, Math.min(ROWS, e.props.maxRows - 2))

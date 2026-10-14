@@ -22,6 +22,8 @@ claude plugin test .             # 跑 hooks/*.test.tsx
 
 除錯：在 `/private/tmp/image-shelf/<session 前 8 碼>/` 建一個空檔 `debug.on`，浮動視窗會把每次的定位結果寫進 `debug.txt`。
 
+貼了圖卻沒有預覽：先看 `/private/tmp/image-shelf/errors.log`。mod 啟動、編譯或浮動視窗出錯時會寫一行（時間、session 前 8 碼、哪一步、錯誤訊息），同樣的錯誤只寫一次；用 `claude --debug` 開的話，debug log 裡也有。失敗的步驟會自己重試，不用重開 Claude Code。
+
 ## 想做什麼，先開 issue
 
 先看 [issues](https://github.com/olilllioli287/claude-code-image-shelf/issues)，有 `help wanted` 標籤的是特別需要人手的。想做的事沒有 issue 的話，先開一個說你打算怎麼做，避免白工。
@@ -40,6 +42,6 @@ claude plugin test .             # 跑 hooks/*.test.tsx
 Welcome! image-shelf runs on macOS only today, and **Windows and Linux support** is what it needs most. Small fixes and test reports from your setup help too.
 
 1. Read [ARCHITECTURE.md](ARCHITECTURE.md).
-2. Develop with `claude --plugin-dir .`, check with `claude plugin validate .` and `claude plugin test .`; `/reload-plugins` reloads after an edit.
+2. Develop with `claude --plugin-dir .`, check with `claude plugin validate .` and `claude plugin test .`; `/reload-plugins` reloads after an edit. No pictures after a paste? `/private/tmp/image-shelf/errors.log` has a line for each failure (also in the debug log under `claude --debug`); a failed step is retried on its own.
 3. Look for `help wanted` issues, or open one describing your plan before a large change.
 4. PRs: one change each, say where you tested (OS, terminal, tmux or not), keep macOS working, put platform code in its own files.
