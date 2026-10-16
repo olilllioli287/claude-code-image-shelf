@@ -256,11 +256,22 @@ func isFrame(_ l: String, _ width: Int, _ open: Character, _ close: Character) -
   return t.first == open && t.last == close && t.count >= width * 9 / 10
 }
 
+// A rule across the pane: all "─", or (the prompt's top rule once the session has a
+// title) "─" on both ends with the title in one stretch between.
+func isRule(_ line: String, _ width: Int) -> Bool {
+  let t = line.trimmingCharacters(in: .whitespaces)
+  if t.count >= max(10, width * 6 / 10) && t.allSatisfy({ $0 == "─" }) { return true }
+  guard t.first == "─", t.last == "─", t.prefix(10).allSatisfy({ $0 == "─" }) else { return false }
+  let inner = t.drop { $0 == "─" }.reversed().drop { $0 == "─" }
+  // Display columns: the title's wide characters (CJK, fullwidth, emoji) take two.
+  let wide: [ClosedRange<UInt32>] = [0x1100...0x115F, 0x2E80...0xA4CF, 0xAC00...0xD7A3, 0xF900...0xFAFF,
+                                     0xFE30...0xFE4F, 0xFF00...0xFF60, 0xFFE0...0xFFE6, 0x1F300...0x1FAFF, 0x20000...0x3FFFD]
+  let columns = t.unicodeScalars.reduce(0) { n, s in n + (wide.contains { $0.contains(s.value) } ? 2 : 1) }
+  return !inner.contains("─") && columns >= width * 9 / 10
+}
+
 func layout(_ lines: [String], _ width: Int, _ most: Int) -> Marks? {
-  let rules = lines.enumerated().filter { _, line in
-    let t = line.trimmingCharacters(in: .whitespaces)
-    return t.count >= max(10, width * 6 / 10) && t.allSatisfy { $0 == "─" }
-  }.map { $0.offset }
+  let rules = lines.enumerated().filter { _, line in isRule(line, width) }.map { $0.offset }
   guard rules.count >= 2 else { return nil }
   let rule = rules[rules.count - 2]
   // Only the rows just above the rule: a line of the transcript ending in "[-]" is not it.

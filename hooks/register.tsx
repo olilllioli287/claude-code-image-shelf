@@ -108,6 +108,30 @@ const heicsIn = async ($: EngineInterface, text: string) => {
 
 const isSame = (a: readonly number[], b: readonly number[]) => a.length === b.length && a.every((n, i) => n === b[i])
 
+// Claude Code can move a session into its background host, which starts it again without
+// the terminal's environment (no TMUX, TMUX_PANE, TERM_PROGRAM). The host still runs under
+// the claude the pane started, so the pane is the one whose shell is among our ancestors.
+const paneOfAncestors = async ($: EngineInterface) => {
+  const tmux = ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux']
+  let bin = 'tmux'
+  for (const path of tmux) if (await $.fs.exists(path).catch(() => false)) { bin = path; break }
+  const [panes, tree, me] = await Promise.all([
+    $.process.run([bin, 'list-panes', '-a', '-F', '#{pane_pid} #{pane_id}']),
+    $.process.run(['ps', '-A', '-o', 'pid=,ppid=']),
+    $.process.run(['sh', '-c', 'echo $PPID']),
+  ])
+  if (panes.exitCode !== 0 || tree.exitCode !== 0) return ''
+  const paneOf = new Map(panes.stdout.trim().split('\n').map(l => l.trim().split(' ') as [string, string]))
+  const parentOf = new Map(tree.stdout.trim().split('\n').map(l => l.trim().split(/\s+/) as [string, string]))
+  let pid = me.stdout.trim()
+  for (let i = 0; i < 40 && pid !== '' && pid !== '0' && pid !== '1'; i++) {
+    const pane = paneOf.get(pid)
+    if (pane !== undefined) return pane
+    pid = parentOf.get(pid) ?? ''
+  }
+  return ''
+}
+
 const setUp = ($: EngineInterface) => {
   if (setup !== undefined) return setup
   const attempt = (async () => {
@@ -115,9 +139,10 @@ const setUp = ($: EngineInterface) => {
     const uid = (await $.process.run(['id', '-u'])).stdout.trim()
     const edits = `/private/tmp/image-shelf/${session.slice(0, 8)}`
     await $.process.run(['mkdir', '-p', edits])
-    const [program, term, tmux, tmuxPane, home] = await Promise.all([$.env.get('TERM_PROGRAM'), $.env.get('TERM'), $.env.get('TMUX'), $.env.get('TMUX_PANE'), $.env.get('HOME')])
-    const canDraw = !tmux && (/^(ghostty|wezterm)$/i.test(program ?? '') || /kitty|ghostty/i.test(term ?? ''))
-    return { edits, tmp: `/private/tmp/claude-${uid}`, session, canDraw, tmuxPane: tmux ? (tmuxPane ?? '') : '', home: home ?? '' }
+    const [program, term, tmux, envPane, home] = await Promise.all([$.env.get('TERM_PROGRAM'), $.env.get('TERM'), $.env.get('TMUX'), $.env.get('TMUX_PANE'), $.env.get('HOME')])
+    const tmuxPane = tmux ? (envPane ?? '') : await paneOfAncestors($).catch(() => '')
+    const canDraw = !tmux && tmuxPane === '' && (/^(ghostty|wezterm)$/i.test(program ?? '') || /kitty|ghostty/i.test(term ?? ''))
+    return { edits, tmp: `/private/tmp/claude-${uid}`, session, canDraw, tmuxPane, home: home ?? '' }
   })()
   setup = attempt
   attempt.then(() => {
